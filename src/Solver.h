@@ -54,6 +54,18 @@
  *  for each FSR and energy group */
 #define scatter_sources(r,e) (scatter_sources[(r)*_num_groups + (e)])
 
+/**
+ * @enum solverMode
+ * @brief The solution mode used by the MOC solver.
+*/
+enum solverMode {
+
+  /** The forward flux distribution */
+  FORWARD,
+
+  /** The adjoint flux distribution */
+  ADJOINT,
+};
 
 /**
  * @enum residualType
@@ -167,53 +179,6 @@ protected:
   /** A pointer to a Coarse Mesh Finite Difference (CMFD) acceleration object */
   Cmfd* _cmfd;
 
-  void clearTimerSplits();
-
-public:
-  Solver(TrackGenerator* track_generator=NULL);
-  virtual ~Solver();
-
-  virtual void setGeometry(Geometry* geometry);
-
-  Geometry* getGeometry();
-  TrackGenerator* getTrackGenerator();
-  FP_PRECISION getFSRVolume(int fsr_id);
-  int getNumPolarAngles();
-  int getNumIterations();
-  double getTotalTime();
-  FP_PRECISION getKeff();
-  FP_PRECISION getConvergenceThreshold();
-  FP_PRECISION getMaxOpticalLength();
-  bool isUsingDoublePrecision();
-  bool isUsingExponentialInterpolation();
-
-  virtual FP_PRECISION getFSRSource(int fsr_id, int group);
-  virtual FP_PRECISION getFlux(int fsr_id, int group);
-  virtual void getFluxes(FP_PRECISION* out_fluxes, int num_fluxes) =0;
-
-  virtual void setTrackGenerator(TrackGenerator* track_generator);
-  virtual void setPolarQuadrature(PolarQuad* polar_quad);
-  virtual void setConvergenceThreshold(FP_PRECISION threshold);
-  virtual void setFixedSourceByFSR(int fsr_id, int group, FP_PRECISION source);
-  virtual void setFluxes(FP_PRECISION* in_fluxes, int num_fluxes) =0;
-  void setFixedSourceByCell(Cell* cell, int group, FP_PRECISION source);
-  void setFixedSourceByMaterial(Material* material, int group, 
-                                FP_PRECISION source);
-  void setMaxOpticalLength(FP_PRECISION max_optical_length);
-  void setExpPrecision(FP_PRECISION precision);
-  void useExponentialInterpolation();
-  void useExponentialIntrinsic();
-
-  virtual void initializePolarQuadrature();
-  virtual void initializeExpEvaluator();
-  virtual void initializeFSRs();
-  virtual void initializeMaterials();
-  virtual void countFissionableFSRs();
-  virtual void initializeCmfd();
-
-  virtual void fissionTransportSweep();
-  virtual void scatterTransportSweep();
-
   /**
    * @brief Initializes Track boundary angular and FSR scalar flux arrays.
    */
@@ -223,6 +188,15 @@ public:
    * @brief Allocates memory for FSR source arrays.
    */
   virtual void initializeSourceArrays() =0;
+
+  virtual void initializePolarQuadrature();
+  virtual void initializeExpEvaluator();
+  virtual void initializeMaterials(solverMode mode=FORWARD);
+  virtual void initializeFSRs();
+  virtual void countFissionableFSRs();
+  virtual void initializeCmfd();
+
+  virtual void resetMaterials(solverMode mode=FORWARD);
 
   /**
    * @brief Zero each Track's boundary fluxes for each energy group and polar
@@ -283,16 +257,56 @@ public:
   virtual void addSourceToScalarFlux() =0;
 
   /**
-   * @brief This method performs one transport swep.
+   * @brief This method performs one transport sweep of all azimuthal angles,
+   *        Tracks, segments, polar angles and energy groups.
    */
   virtual void transportSweep() =0;
 
-  void computeFlux(int max_iters=1000, bool only_fixed_source=true);
+  void clearTimerSplits();
 
-  void computeSource(int max_iters=1000, double k_eff=1.0, 
-                     residualType res_type=TOTAL_SOURCE);
-  void computeEigenvalue(int max_iters=1000, 
+public:
+  Solver(TrackGenerator* track_generator=NULL);
+  virtual ~Solver();
+
+  virtual void setGeometry(Geometry* geometry);
+
+  Geometry* getGeometry();
+  TrackGenerator* getTrackGenerator();
+  FP_PRECISION getFSRVolume(int fsr_id);
+  int getNumPolarAngles();
+  int getNumIterations();
+  double getTotalTime();
+  FP_PRECISION getKeff();
+  FP_PRECISION getConvergenceThreshold();
+  FP_PRECISION getMaxOpticalLength();
+  bool isUsingDoublePrecision();
+  bool isUsingExponentialInterpolation();
+
+  virtual FP_PRECISION getFSRScalarFlux(int fsr_id, int group);
+  virtual FP_PRECISION getFSRSource(int fsr_id, int group);
+
+  virtual void setTrackGenerator(TrackGenerator* track_generator);
+  virtual void setPolarQuadrature(PolarQuad* polar_quad);
+  virtual void setConvergenceThreshold(FP_PRECISION threshold);
+  virtual void setFixedSourceByFSR(int fsr_id, int group, FP_PRECISION source);
+  void setFixedSourceByCell(Cell* cell, int group, FP_PRECISION source);
+  void setFixedSourceByMaterial(Material* material, int group, 
+                                FP_PRECISION source);
+  void setMaxOpticalLength(FP_PRECISION max_optical_length);
+  void setExpPrecision(FP_PRECISION precision);
+  void useExponentialInterpolation();
+  void useExponentialIntrinsic();
+
+  void computeFlux(int max_iters=1000, solverMode mode=FORWARD,
+                   bool only_fixed_source=true);
+  void computeSource(int max_iters=1000, solverMode mode=FORWARD,
+                     double k_eff=1.0, residualType res_type=TOTAL_SOURCE);
+  void computeEigenvalue(int max_iters=1000, solverMode mode=FORWARD,
                          residualType res_type=FISSION_SOURCE);
+
+  
+  virtual void fissionTransportSweep();
+  virtual void scatterTransportSweep();
 
  /**
   * @brief Computes the volume-weighted, energy integrated fission rate in

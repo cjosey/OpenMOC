@@ -10,6 +10,12 @@ if (sys.version_info[0] == 2):
 else:
   from openmoc.openmoc import *
 
+import log
+import options
+import materialize
+import plotter
+import process
+
 # Tell Python to recognize CTRL+C and stop the C++ extension module
 # when this is passed in from the keyboard
 signal.signal(signal.SIGINT, signal.SIG_DFL)

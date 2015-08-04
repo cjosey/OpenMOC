@@ -214,6 +214,38 @@ bool Solver::isUsingExponentialInterpolation() {
 
 
 /**
+ * @brief Returns the scalar flux for some FSR and energy group.
+ * @param fsr_id the ID for the FSR of interest
+ * @param group the energy group of interest
+ * @return the FSR scalar flux
+ */
+FP_PRECISION Solver::getFSRScalarFlux(int fsr_id, int group) {
+
+  if (fsr_id >= _num_FSRs)
+    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
+               "since the max FSR ID = %d", fsr_id, _num_FSRs-1);
+
+  else if (fsr_id < 0)
+    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
+               "since FSRs do not have negative IDs", fsr_id);
+
+  else if (group-1 >= _num_groups)
+    log_printf(ERROR, "Unable to return a scalar flux in group %d "
+               "since there are only %d groups", group, _num_groups);
+
+  else if (group <= 0)
+    log_printf(ERROR, "Unable to return a scalar flux in group %d "
+               "since groups must be greater or equal to 1", group);
+
+  else if (_scalar_flux == NULL)
+    log_printf(ERROR, "Unable to return a scalar flux "
+             "since it has not yet been computed");
+
+  return _scalar_flux(fsr_id,group-1);
+}
+
+
+/**
  * @brief Returns the source for some energy group for a flat source region
  * @details This is a helper routine used by the openmoc.process module.
  * @param fsr_id the ID for the FSR of interest
@@ -271,38 +303,6 @@ FP_PRECISION Solver::getFSRSource(int fsr_id, int group) {
   total_source *= ONE_OVER_FOUR_PI;
 
   return total_source;
-}
-
-
-/**
- * @brief Returns the scalar flux for some FSR and energy group.
- * @param fsr_id the ID for the FSR of interest
- * @param group the energy group of interest
- * @return the FSR scalar flux
- */
-FP_PRECISION Solver::getFlux(int fsr_id, int group) {
-
-  if (fsr_id >= _num_FSRs)
-    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
-               "since the max FSR ID = %d", fsr_id, _num_FSRs-1);
-
-  else if (fsr_id < 0)
-    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
-               "since FSRs do not have negative IDs", fsr_id);
-
-  else if (group-1 >= _num_groups)
-    log_printf(ERROR, "Unable to return a scalar flux in group %d "
-               "since there are only %d groups", group, _num_groups);
-
-  else if (group <= 0)
-    log_printf(ERROR, "Unable to return a scalar flux in group %d "
-               "since groups must be greater or equal to 1", group);
-
-  else if (_scalar_flux == NULL)
-    log_printf(ERROR, "Unable to return a scalar flux "
-             "since it has not yet been computed");
-
-  return _scalar_flux(fsr_id,group-1);
 }
 
 
@@ -577,16 +577,23 @@ void Solver::initializeExpEvaluator() {
 
 /**
  * @brief Initializes the Material fission matrices.
+ * @details In an adjoint calculation, this routine will transpose the
+ *          scattering and fission matrices in each material.
+ * @param mode the solution type (FORWARD or ADJOINT)
  */
-void Solver::initializeMaterials() {
+void Solver::initializeMaterials(solverMode mode) {
 
   log_printf(INFO, "Initializing materials...");
 
   std::map<int, Material*> materials = _geometry->getAllMaterials();
   std::map<int, Material*>::iterator m_iter;
 
-  for (m_iter = materials.begin(); m_iter != materials.end(); ++m_iter)
+  for (m_iter = materials.begin(); m_iter != materials.end(); ++m_iter) {
     m_iter->second->buildFissionMatrix();
+
+    if (mode == ADJOINT)
+      m_iter->second->transposeProductionMatrices();
+  }
 }
 
 
@@ -695,6 +702,28 @@ void Solver::scatterTransportSweep() {
   addSourceToScalarFlux();
 }
 
+/**
+ * @brief Returns the Material data to its original state.
+ * @details In an adjoint calculation, the scattering and fission matrices
+ *          in each material are transposed during initialization. This 
+ *          routine returns both matrices to their original (FORWARD)
+ *          state at the end of a calculation.
+ * @param mode the solution type (FORWARD or ADJOINT)
+ */
+void Solver::resetMaterials(solverMode mode) {
+
+  if (mode == FORWARD)
+    return;
+
+  log_printf(INFO, "Resetting materials...");
+
+  std::map<int, Material*> materials = _geometry->getAllMaterials();
+  std::map<int, Material*>::iterator m_iter;
+
+  for (m_iter = materials.begin(); m_iter != materials.end(); ++m_iter)
+    m_iter->second->transposeProductionMatrices();
+}
+
 
 /**
  * @brief Computes the scalar flux distribution by performing a series of 
@@ -746,9 +775,11 @@ void Solver::scatterTransportSweep() {
  *
  *
  * @param max_iters the maximum number of source iterations to allow
+ * @param mode the solution type (FORWARD or ADJOINT)
  * @param only_fixed_source use only fixed sources (true by default)
  */
-void Solver::computeFlux(int max_iters, bool only_fixed_source) {
+void Solver::computeFlux(int max_iters, solverMode mode, 
+                         bool only_fixed_source) {
 
   if (_track_generator == NULL)
     log_printf(ERROR, "The Solver is unable to compute the flux "
@@ -781,7 +812,7 @@ void Solver::computeFlux(int max_iters, bool only_fixed_source) {
   }
 
   initializeSourceArrays();
-  initializeMaterials();
+  initializeMaterials(mode);
   initializeFSRs();
   countFissionableFSRs();
   zeroTrackFluxes();
@@ -804,11 +835,14 @@ void Solver::computeFlux(int max_iters, bool only_fixed_source) {
       _num_iterations = i;
       _timer->stopTimer();
       _timer->recordSplit("Total time");
+      resetMaterials(mode);
       return;
     }
   }
 
   log_printf(WARNING, "Unable to converge the flux");
+
+  resetMaterials(mode);
 
   _num_iterations = max_iters;
   _timer->stopTimer();
@@ -849,10 +883,12 @@ void Solver::computeFlux(int max_iters, bool only_fixed_source) {
  * @endcode
  *
  * @param max_iters the maximum number of source iterations to allow
+ * @param mode the solution type (FORWARD or ADJOINT)
  * @param k_eff the sub/super-critical eigenvalue (default 1.0)
  * @param res_type the type of residual used for the convergence criterion
  */
-void Solver::computeSource(int max_iters, double k_eff, residualType res_type) {
+void Solver::computeSource(int max_iters, solverMode mode,
+                           double k_eff, residualType res_type) {
 
   if (_track_generator == NULL)
     log_printf(ERROR, "The Solver is unable to compute the source "
@@ -878,7 +914,7 @@ void Solver::computeSource(int max_iters, double k_eff, residualType res_type) {
   initializeExpEvaluator();
   initializeFluxArrays();
   initializeSourceArrays();
-  initializeMaterials();
+  initializeMaterials(mode);
   initializeFSRs();
 
   /* Guess unity scalar flux for each region */
@@ -902,11 +938,14 @@ void Solver::computeSource(int max_iters, double k_eff, residualType res_type) {
       _num_iterations = i;
       _timer->stopTimer();
       _timer->recordSplit("Total time");
+      resetMaterials(mode);
       return;
     }
   }
 
   log_printf(WARNING, "Unable to converge the source");
+
+  resetMaterials(mode);
 
   _num_iterations = max_iters;
   _timer->stopTimer();
@@ -935,9 +974,11 @@ void Solver::computeSource(int max_iters, double k_eff, residualType res_type) {
  * @endcode
  *
  * @param max_iters the maximum number of source iterations to allow
+ * @param mode the solution type (FORWARD or ADJOINT)
  * @param res_type the type of residual used for the convergence criterion
  */
-void Solver::computeEigenvalue(int max_iters, residualType res_type) {
+void Solver::computeEigenvalue(int max_iters, solverMode mode, 
+                               residualType res_type) {
 
   if (_track_generator == NULL)
     log_printf(ERROR, "The Solver is unable to compute the eigenvalue "
@@ -961,7 +1002,7 @@ void Solver::computeEigenvalue(int max_iters, residualType res_type) {
   initializeExpEvaluator();
   initializeFluxArrays();
   initializeSourceArrays();
-  initializeMaterials();
+  initializeMaterials(mode);
   initializeFSRs();
   countFissionableFSRs();
 
@@ -1000,11 +1041,14 @@ void Solver::computeEigenvalue(int max_iters, residualType res_type) {
       _num_iterations = i;
       _timer->stopTimer();
       _timer->recordSplit("Total time");
+      resetMaterials(mode);
       return;
     }
   }
 
   log_printf(WARNING, "Unable to converge the source distribution");
+
+  resetMaterials(mode);
 
   _num_iterations = max_iters;
   _timer->stopTimer();

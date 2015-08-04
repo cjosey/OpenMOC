@@ -711,6 +711,38 @@ int GPUSolver::getNumThreadsPerBlock() {
 
 
 /**
+ * @brief Returns the scalar flux for some FSR and energy group.
+ * @param fsr_id the ID for the FSR of interest
+ * @param group the energy group of interest
+ * @return the FSR scalar flux
+ */
+FP_PRECISION GPUSolver::getFSRScalarFlux(int fsr_id, int group) {
+
+  if (fsr_id >= _num_FSRs)
+    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
+               "since the max FSR ID = %d", fsr_id, _num_FSRs-1);
+
+  else if (fsr_id < 0)
+    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
+               "since FSRs do not have negative IDs", fsr_id);
+
+  else if (group-1 >= _num_groups)
+    log_printf(ERROR, "Unable to return a scalar flux in group %d "
+               "since there are only %d groups", group, _num_groups);
+
+  else if (group <= 0)
+    log_printf(ERROR, "Unable to return a scalar flux in group %d "
+               "since groups must be greater or equal to 1", group);
+
+  if (_scalar_flux.size() == 0)
+    log_printf(ERROR, "Unable to return a scalar flux "
+               "since it has not yet been computed");
+
+  return _scalar_flux(fsr_id,group-1);
+}
+
+
+/**
  * @brief Returns the source for some energy group for a flat source region
  * @details This is a helper routine used by the openmoc.process module.
  * @param fsr_id the ID for the FSR of interest
@@ -779,74 +811,6 @@ FP_PRECISION GPUSolver::getFSRSource(int fsr_id, int group) {
   delete [] fsr_scalar_fluxes;
 
   return total_source;
-}
-
-
-/**
- * @brief Returns the scalar flux for some FSR and energy group.
- * @param fsr_id the ID for the FSR of interest
- * @param group the energy group of interest
- * @return the FSR scalar flux
- */
-FP_PRECISION GPUSolver::getFlux(int fsr_id, int group) {
-
-  if (fsr_id >= _num_FSRs)
-    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
-               "since the max FSR ID = %d", fsr_id, _num_FSRs-1);
-
-  else if (fsr_id < 0)
-    log_printf(ERROR, "Unable to return a scalar flux for FSR ID = %d "
-               "since FSRs do not have negative IDs", fsr_id);
-
-  else if (group-1 >= _num_groups)
-    log_printf(ERROR, "Unable to return a scalar flux in group %d "
-               "since there are only %d groups", group, _num_groups);
-
-  else if (group <= 0)
-    log_printf(ERROR, "Unable to return a scalar flux in group %d "
-               "since groups must be greater or equal to 1", group);
-
-  if (_scalar_flux.size() == 0)
-    log_printf(ERROR, "Unable to return a scalar flux "
-               "since it has not yet been computed");
-
-  return _scalar_flux(fsr_id,group-1);
-}
-
-
-/**
- * @brief Fills an array with the scalar fluxes on the GPU.
- * @details This class method is a helper routine called by the OpenMOC
- *          Python "openmoc.krylov" module for Krylov subspace methods. 
- *          Although this method appears to require two arguments, in
- *          reality it only requires one due to SWIG and would be called
- *          from within Python as follows:
- *
- * @code
- *          num_fluxes = num_groups * num_FSRs
- *          fluxes = solver.getFluxes(num_fluxes)
- * @endcode
- *
- * @param fluxes an array of FSR scalar fluxes in each energy group
- * @param num_fluxes the total number of FSR flux values
- */
-void GPUSolver::getFluxes(FP_PRECISION* out_fluxes, int num_fluxes) {
-
-  if (num_fluxes != _num_groups * _num_FSRs)
-    log_printf(ERROR, "Unable to get FSR scalar fluxes since there are "
-               "%d groups and %d FSRs which does not match the requested "
-               "%d flux values", _num_groups, _num_FSRs, num_fluxes);
-
-  else if (_scalar_flux.size() == 0)
-    log_printf(ERROR, "Unable to get FSR scalar fluxes since they "
-               "have not yet been allocated on the device");
-
-  FP_PRECISION* scalar_flux = 
-       thrust::raw_pointer_cast(&_scalar_flux[0]);
-
-  /* Copy the fluxes from the GPU to the input array */
-  cudaMemcpy((void*)out_fluxes, (void*)scalar_flux,
-            num_fluxes * sizeof(FP_PRECISION), cudaMemcpyDeviceToHost);
 }
 
 
@@ -1057,50 +1021,6 @@ void GPUSolver::initializeExpEvaluator() {
 
 
 /**
- * @brief Allocates all Materials data on the GPU.
- * @details This method loops over the materials in the host_materials map.
- *          Since CUDA does not support std::map data types on the device, 
- *          the materials map must be converted to an array and a map created
- *          that maps a material ID to an indice in the new materials array. In
- *          initializeTracks, this map is used to convert the Material ID
- *          associated with every segment to an index in the materials array.
- */
-void GPUSolver::initializeMaterials() {
-
-  Solver::initializeMaterials();
-
-  log_printf(INFO, "Initializing materials on the GPU...");
-
-  /* Copy the number of energy groups to constant memory on the GPU */
-  cudaMemcpyToSymbol(num_groups, (void*)&_num_groups, sizeof(int), 0,
-                     cudaMemcpyHostToDevice);
-
-  /* Delete old materials array if it exists */
-  if (_materials != NULL)
-    cudaFree(_materials);
-
-  /* Allocate memory for all dev_materials on the device */
-  try{
-
-    std::map<int, Material*> host_materials=_geometry->getAllMaterials();
-    std::map<int, Material*>::iterator iter;
-    int material_index = 0;
-
-    /* Iterate through all Materials and clone them as dev_material structs
-     * on the device */
-    cudaMalloc((void**)&_materials, _num_materials * sizeof(dev_material));
-    for (iter=host_materials.begin(); iter != host_materials.end(); ++iter) {
-      clone_material(iter->second, &_materials[material_index]);
-      material_index++;
-    }
-  }
-  catch(std::exception &e) {
-    log_printf(ERROR, "Could not allocate memory for Materials on GPU");
-  }
-}
-
-
-/**
  * @brief Initializes the FSR volumes and dev_materials array on the GPU.
  * @details This method assigns each FSR a unique, monotonically increasing
  *          ID, sets the Material for each FSR, and assigns a volume based on
@@ -1162,6 +1082,51 @@ void GPUSolver::initializeFSRs() {
   }
   catch(std::exception &e) {
     log_printf(ERROR, "Could not allocate memory for FSRs on GPU");
+  }
+}
+
+
+/**
+ * @brief Allocates all Materials data on the GPU.
+ * @details This method loops over the materials in the host_materials map.
+ *          Since CUDA does not support std::map data types on the device, 
+ *          the materials map must be converted to an array and a map created
+ *          that maps a material ID to an indice in the new materials array. In
+ *          initializeTracks, this map is used to convert the Material ID
+ *          associated with every segment to an index in the materials array.
+ * @param mode the solution type (FORWARD or ADJOINT) 
+ */
+void GPUSolver::initializeMaterials(solverMode mode) {
+
+  Solver::initializeMaterials(mode);
+
+  log_printf(INFO, "Initializing materials on the GPU...");
+
+  /* Copy the number of energy groups to constant memory on the GPU */
+  cudaMemcpyToSymbol(num_groups, (void*)&_num_groups, sizeof(int), 0,
+                     cudaMemcpyHostToDevice);
+
+  /* Delete old materials array if it exists */
+  if (_materials != NULL)
+    cudaFree(_materials);
+
+  /* Allocate memory for all dev_materials on the device */
+  try{
+
+    std::map<int, Material*> host_materials=_geometry->getAllMaterials();
+    std::map<int, Material*>::iterator iter;
+    int material_index = 0;
+
+    /* Iterate through all Materials and clone them as dev_material structs
+     * on the device */
+    cudaMalloc((void**)&_materials, _num_materials * sizeof(dev_material));
+    for (iter=host_materials.begin(); iter != host_materials.end(); ++iter) {
+      clone_material(iter->second, &_materials[material_index]);
+      material_index++;
+    }
+  }
+  catch(std::exception &e) {
+    log_printf(ERROR, "Could not allocate memory for Materials on GPU");
   }
 }
 
@@ -1377,7 +1342,13 @@ void GPUSolver::normalizeFluxes() {
 /**
  * @brief Computes the total source (fission, scattering, fixed) in each FSR.
  * @details This method computes the total source in each FSR based on
- *          this iteration's current approximation to the scalar flux.
+ *          this iteration's current approximation to the scalar flux. A
+ *          residual for the source with respect to the source compute on
+ *          the previous iteration is computed and returned. The residual
+ *          is determined as follows:
+ *          /f$ res = \sqrt{\frac{\displaystyle\sum \displaystyle\sum
+ *                    \left(\frac{Q^i - Q^{i-1}{Q^i}\right)^2}
+ *                    {\# FSRs \times # groups}}} /f$
  */
 void GPUSolver::computeFSRSources() {
 
