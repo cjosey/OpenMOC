@@ -50,6 +50,10 @@
  *  for each FSR and energy group */
 #define fission_sources(r,e) (fission_sources[(r)*_num_groups + (e)])
 
+/** Indexing scheme for the total in-scatter source (\f$ \Sigma_s\Phi \f$)
+ *  for each FSR and energy group */
+#define scatter_sources(r,e) (scatter_sources[(r)*_num_groups + (e)])
+
 
 /**
  * @enum residualType
@@ -151,8 +155,11 @@ protected:
   /** The tolerance for converging the source/flux */
   FP_PRECISION _converge_thresh;
 
-  /** En ExpEvaluator to compute exponentials in the transport equation */
+  /** An ExpEvaluator to compute exponentials in the transport equation */
   ExpEvaluator* _exp_evaluator;
+
+  /** Indicator of whether the flux array is defined by the user */
+  bool _user_fluxes;
 
   /** A timer to record timing data for a simulation */
   Timer* _timer;
@@ -207,6 +214,16 @@ protected:
   virtual void computeFSRSources() =0;
 
   /**
+   * @brief Computes the total fission source for each FSR and energy group.
+   */
+  virtual void computeFSRFissionSources() =0;
+
+  /**
+   * @brief Computes the total scattering source for each FSR and energy group.
+   */
+  virtual void computeFSRScatterSources() =0;
+
+  /**
    * @brief Computes the residual between successive flux/source iterations. 
    * @param res_type the type of residual (FLUX, FISSIOn_SOURCE, TOTAL_SOURCE)
    * @return the total residual summed over FSRs and energy groups
@@ -252,6 +269,7 @@ public:
   bool isUsingExponentialInterpolation();
 
   virtual FP_PRECISION getFSRScalarFlux(int fsr_id, int group);
+  virtual FP_PRECISION getFlux(int fsr_id, int group);
   virtual FP_PRECISION getFSRSource(int fsr_id, int group);
 
   virtual void setTrackGenerator(TrackGenerator* track_generator);
@@ -272,6 +290,8 @@ public:
   void computeEigenvalue(int max_iters=1000, 
                          residualType res_type=FISSION_SOURCE);
 
+  virtual void fissionTransportSweep();
+  virtual void scatterTransportSweep();
  /**
   * @brief Computes the volume-weighted, energy integrated fission rate in
   *        each FSR and stores them in an array indexed by FSR ID.
